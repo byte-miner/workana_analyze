@@ -2,6 +2,7 @@ import { after } from "next/server";
 import { NextResponse } from "next/server";
 import { runScraper, isScrapeRunning, getScrapeStatus } from "@/lib/scraper";
 import { getIncrementalMaxPages } from "@/lib/config";
+import { getEffectiveSettings } from "@/lib/runtimeSettings.server";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -14,10 +15,16 @@ export async function POST() {
     );
   }
 
+  const settings = await getEffectiveSettings();
+
   // Keep scrape alive after the HTTP response (Next.js would otherwise drop the task).
   after(async () => {
     try {
-      await runScraper({ maxPages: getIncrementalMaxPages(), enrichCountry: false });
+      await runScraper({
+        maxPages: getIncrementalMaxPages(),
+        enrichCountry: false,
+        settings,
+      });
     } catch (err) {
       console.error("Background scrape failed:", err);
     }

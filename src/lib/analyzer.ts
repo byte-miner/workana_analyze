@@ -37,9 +37,10 @@ function extractTechStacks(jobs: ReturnType<typeof getAllJobs>): TechStackStat[]
 async function generatePromisingAreas(
   categories: CategoryStat[],
   techStacks: TechStackStat[],
-  totalProjects: number
+  totalProjects: number,
+  apiKeyOverride?: string
 ): Promise<string[]> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = apiKeyOverride?.trim() || process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return buildFallbackInsights(categories, techStacks);
   }
@@ -186,13 +187,14 @@ export async function computeAnalyticsSnapshot(): Promise<AnalyticsSummary> {
   };
 }
 
-export async function computeAnalytics(): Promise<AnalyticsSummary> {
+export async function computeAnalytics(apiKeyOverride?: string): Promise<AnalyticsSummary> {
   const core = buildAnalyticsCore();
 
   const promisingAreas = await generatePromisingAreas(
     core.insightInput.categories,
     core.insightInput.techStacks,
-    core.insightInput.totalProjects
+    core.insightInput.totalProjects,
+    apiKeyOverride
   );
   cachedPromisingAreas = promisingAreas;
 

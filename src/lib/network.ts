@@ -1,9 +1,11 @@
 import { chromium, type Browser } from "playwright";
 import { anonymizeProxy, closeAnonymizedProxy } from "proxy-chain";
 import { WORKANA_BASE, IT_PROGRAMMING_CATEGORY } from "./config";
+import type { ProxyMode, RuntimeSettings } from "./settingsTypes";
 
 export type NetworkRoute = "proxy" | "direct";
-export type ProxyMode = "auto" | "always" | "never";
+
+export type NetworkConfig = Pick<RuntimeSettings, "workanaProxy" | "workanaProxyMode">;
 
 const PROBE_URL = `${WORKANA_BASE}/jobs?category=${IT_PROGRAMMING_CATEGORY}&page=1&language=pt`;
 const PROBE_TIMEOUT_MS = 25000;
@@ -24,14 +26,14 @@ export function configureLocalBypass() {
   process.env.no_proxy = value;
 }
 
-export function getProxyMode(): ProxyMode {
-  const mode = (process.env.WORKANA_PROXY_MODE || "auto").toLowerCase();
+export function getProxyMode(config?: NetworkConfig): ProxyMode {
+  const mode = (config?.workanaProxyMode || process.env.WORKANA_PROXY_MODE || "auto").toLowerCase();
   if (mode === "always" || mode === "never") return mode;
   return "auto";
 }
 
-export function buildProxyUrl(): string | null {
-  const raw = process.env.WORKANA_PROXY?.trim();
+export function buildProxyUrl(config?: NetworkConfig): string | null {
+  const raw = (config?.workanaProxy || process.env.WORKANA_PROXY)?.trim();
   if (!raw) return null;
 
   const match = raw.match(/^socks5:\/\/([^:]+):(\d+):([^:]+):(.+)$/);
@@ -47,7 +49,7 @@ export interface BrowserSession {
   close: () => Promise<void>;
 }
 
-async function launchBrowser(route: NetworkRoute): Promise<BrowserSession> {
+async function launchBrowser(route: NetworkRoute, config?: NetworkConfig): Promise<BrowserSession> {
   let anonymizedProxy: string | null = null;
 
   const launchOptions: Parameters<typeof chromium.launch>[0] = {
@@ -55,7 +57,7 @@ async function launchBrowser(route: NetworkRoute): Promise<BrowserSession> {
   };
 
   if (route === "proxy") {
-    const proxyUrl = buildProxyUrl();
+    const proxyUrl = buildProxyUrl(config);
     if (!proxyUrl) {
       throw new Error("WORKANA_PROXY is not configured");
     }
@@ -77,10 +79,10 @@ async function launchBrowser(route: NetworkRoute): Promise<BrowserSession> {
   };
 }
 
-async function probeRoute(route: NetworkRoute): Promise<boolean> {
+async function probeRoute(route: NetworkRoute, config?: NetworkConfig): Promise<boolean> {
   let session: BrowserSession | null = null;
   try {
-    session = await launchBrowser(route);
+    session = await launchBrowser(route, config);
     const page = await session.browser.newPage();
     const response = await page.goto(PROBE_URL, {
       waitUntil: "domcontentloaded",
@@ -100,9 +102,9 @@ async function probeRoute(route: NetworkRoute): Promise<boolean> {
  * Pick the best route for the current network (VPN on or off).
  * auto: try direct first (works with VPN), then proxy (works without VPN).
  */
-export async function selectNetworkRoute(): Promise<NetworkRoute> {
-  const mode = getProxyMode();
-  const hasProxy = Boolean(buildProxyUrl());
+export async function selectNetworkRoute(config?: NetworkConfig): Promise<NetworkRoute> {
+  const mode = getProxyMode(config);
+  const hasProxy = Boolean(buildProxyUrl(config));
 
   if (mode === "never") return "direct";
   if (mode === "always") {
@@ -113,8 +115,8 @@ export async function selectNetworkRoute(): Promise<NetworkRoute> {
   }
 
   // auto — prefer direct (VPN-friendly), fall back to SOCKS proxy
-  if (await probeRoute("direct")) return "direct";
-  if (hasProxy && (await probeRoute("proxy"))) return "proxy";
+  if (await probeRoute("direct", config)) return "direct";
+  if (hasProxy && (await probeRoute("proxy", config))) return "proxy";
 
   throw new Error(
     "Cannot reach Workana. Try toggling VPN or check WORKANA_PROXY settings."
@@ -122,10 +124,11 @@ export async function selectNetworkRoute(): Promise<NetworkRoute> {
 }
 
 export async function createBrowserSession(
-  preferredRoute?: NetworkRoute
+  preferredRoute?: NetworkRoute,
+  config?: NetworkConfig
 ): Promise<BrowserSession> {
-  const route = preferredRoute ?? (await selectNetworkRoute());
-  return launchBrowser(route);
+  const route = preferredRoute ?? (await selectNetworkRoute(config));
+  return launchBrowser(route, config);
 }
 
 export function routeLabel(route: NetworkRoute): string {

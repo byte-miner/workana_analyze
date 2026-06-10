@@ -25,7 +25,9 @@ import {
   getProxyMode,
   buildProxyUrl,
   type NetworkRoute,
+  type NetworkConfig,
 } from "./network";
+import type { RuntimeSettings } from "./settingsTypes";
 import { upsertJob, startScrapeLog, finishScrapeLog, repairInvalidPublishedDates } from "./db";
 
 let scrapeRunning = false;
@@ -50,8 +52,8 @@ export function getScrapeStatus() {
   return { status: scrapeStatus, message: scrapeMessage };
 }
 
-async function setupPage(browser: Browser): Promise<Page> {
-  const session = process.env.WORKANA_SESSION;
+async function setupPage(browser: Browser, sessionId?: string): Promise<Page> {
+  const session = sessionId?.trim() || process.env.WORKANA_SESSION?.trim();
   const context = await browser.newContext({
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -202,7 +204,7 @@ async function scrapePage(
 
   if (jobs.length === 0 && (await detectGuestWall(page))) {
     throw new Error(
-      "Workana returned the guest signup wall — set a valid WORKANA_SESSION cookie in .env.local"
+      "Workana returned the guest signup wall — set a valid session in Settings or .env.local"
     );
   }
 
@@ -363,6 +365,7 @@ export async function runScraper(options?: {
   maxPages?: number;
   enrichCountry?: boolean;
   languages?: (typeof LANGUAGES)[number][];
+  settings?: RuntimeSettings;
 }): Promise<ScrapeResult> {
   return retainScrapeTask(
     (async () => {
@@ -377,6 +380,13 @@ export async function runScraper(options?: {
       const maxPages = options?.maxPages ?? getDefaultMaxPages();
       const enrichCountry = options?.enrichCountry ?? false;
       const languages = options?.languages ?? getIncrementalLanguages();
+      const settings = options?.settings;
+      const networkConfig: NetworkConfig | undefined = settings
+        ? {
+            workanaProxy: settings.workanaProxy,
+            workanaProxyMode: settings.workanaProxyMode,
+          }
+        : undefined;
       const logId = startScrapeLog();
 
       let session: Awaited<ReturnType<typeof createBrowserSession>> | null = null;
@@ -391,14 +401,14 @@ export async function runScraper(options?: {
 
       try {
         scrapeMessage = "Detecting network route (VPN/proxy)...";
-        activeRoute = await selectNetworkRoute();
+        activeRoute = await selectNetworkRoute(networkConfig);
 
         const routesToTry: NetworkRoute[] = [activeRoute];
         const fallback = alternateRoute(activeRoute);
-        const mode = getProxyMode();
+        const mode = getProxyMode(networkConfig);
         if (
           mode === "auto" &&
-          (fallback === "direct" || buildProxyUrl()) &&
+          (fallback === "direct" || buildProxyUrl(networkConfig)) &&
           fallback !== activeRoute
         ) {
           routesToTry.push(fallback);
@@ -407,7 +417,7 @@ export async function runScraper(options?: {
         for (const route of routesToTry) {
           if (mode === "never" && route === "proxy") continue;
           if (mode === "always" && route === "direct") continue;
-          if (route === "proxy" && !buildProxyUrl()) continue;
+          if (route === "proxy" && !buildProxyUrl(networkConfig)) continue;
 
           if (session) {
             await session.close();
@@ -416,8 +426,8 @@ export async function runScraper(options?: {
 
           activeRoute = route;
           scrapeMessage = `Connecting via ${routeLabel(route)}...`;
-          session = await createBrowserSession(route);
-          const page = await setupPage(session.browser);
+          session = await createBrowserSession(route, networkConfig);
+          const page = await setupPage(session.browser, settings?.workanaSession);
 
           result = await performScrapeLoop(
             page,
@@ -443,7 +453,9 @@ export async function runScraper(options?: {
           result.errors.push("No projects found on any page");
         }
 
-        if (!process.env.WORKANA_SESSION) {
+        const workanaSession =
+          settings?.workanaSession?.trim() || process.env.WORKANA_SESSION?.trim() || "";
+        if (!workanaSession) {
           result.errors.push(
             "WORKANA_SESSION is not set — listings may be incomplete behind Workana's guest wall"
           );

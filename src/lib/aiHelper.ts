@@ -80,14 +80,15 @@ ${researchContext}`;
 
 export async function generateAiHelperReply(
   userMessage: string,
-  history: ChatMessage[] = []
+  history: ChatMessage[] = [],
+  apiKeyOverride?: string
 ): Promise<{ reply: string; sources: string[] }> {
   const local = findLocalAnswer(userMessage);
   if (local) return local;
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = apiKeyOverride?.trim() || process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not configured. Add it to your .env.local file.");
+    throw new Error("OPENAI_API_KEY is not configured. Add it in Settings or .env.local.");
   }
 
   const [helpContext, researchContext] = await Promise.all([
@@ -122,7 +123,8 @@ export async function generateAiHelperReply(
 
 export async function* streamAiHelperReply(
   userMessage: string,
-  history: ChatMessage[] = []
+  history: ChatMessage[] = [],
+  apiKeyOverride?: string
 ): AsyncGenerator<{ type: "token"; text: string } | { type: "done"; sources: string[] }> {
   const local = findLocalAnswer(userMessage);
   if (local) {
@@ -131,9 +133,9 @@ export async function* streamAiHelperReply(
     return;
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = apiKeyOverride?.trim() || process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not configured. Add it to your .env.local file.");
+    throw new Error("OPENAI_API_KEY is not configured. Add it in Settings or .env.local.");
   }
 
   const [helpContext, researchContext] = await Promise.all([

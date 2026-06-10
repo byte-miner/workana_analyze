@@ -1,9 +1,11 @@
 import { generateAiHelperReply, streamAiHelperReply, type ChatMessage } from "@/lib/aiHelper";
+import { getEffectiveSettings } from "@/lib/runtimeSettings.server";
 
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
   try {
+    const settings = await getEffectiveSettings();
     const body = (await request.json()) as {
       message?: string;
       history?: ChatMessage[];
@@ -25,7 +27,11 @@ export async function POST(request: Request) {
       const readable = new ReadableStream({
         async start(controller) {
           try {
-            for await (const event of streamAiHelperReply(message, history)) {
+            for await (const event of streamAiHelperReply(
+              message,
+              history,
+              settings.openaiApiKey
+            )) {
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
               );
@@ -50,7 +56,11 @@ export async function POST(request: Request) {
       });
     }
 
-    const { reply, sources } = await generateAiHelperReply(message, history);
+    const { reply, sources } = await generateAiHelperReply(
+      message,
+      history,
+      settings.openaiApiKey
+    );
     return Response.json({ reply, sources });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to generate response";
