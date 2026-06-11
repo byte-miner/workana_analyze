@@ -1,9 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { defaultProxyPort } from "@/lib/proxyConfig";
 import {
   CLIENT_SETTINGS_KEY,
+  PROXY_TYPES,
   type ProxyMode,
+  type ProxyType,
   type RuntimeSettingsInput,
   type RuntimeSettingsStatus,
 } from "@/lib/settingsTypes";
@@ -15,30 +18,66 @@ interface SettingsModalProps {
 
 interface FormState {
   workanaSession: string;
-  workanaProxy: string;
+  workanaEmail: string;
+  workanaPassword: string;
+  proxyType: ProxyType;
+  proxyHost: string;
+  proxyPort: string;
+  proxyUsername: string;
+  proxyPassword: string;
   workanaProxyMode: ProxyMode;
   openaiApiKey: string;
 }
 
 const EMPTY_FORM: FormState = {
   workanaSession: "",
-  workanaProxy: "",
+  workanaEmail: "",
+  workanaPassword: "",
+  proxyType: "socks5",
+  proxyHost: "",
+  proxyPort: "",
+  proxyUsername: "",
+  proxyPassword: "",
   workanaProxyMode: "auto",
   openaiApiKey: "",
 };
+
+function migrateLegacyForm(parsed: Record<string, unknown>): FormState {
+  const form: FormState = {
+    ...EMPTY_FORM,
+    workanaSession: String(parsed.workanaSession ?? ""),
+    workanaEmail: String(parsed.workanaEmail ?? ""),
+    workanaPassword: String(parsed.workanaPassword ?? ""),
+    proxyType: (parsed.proxyType as ProxyType) ?? "socks5",
+    proxyHost: String(parsed.proxyHost ?? ""),
+    proxyPort: String(parsed.proxyPort ?? ""),
+    proxyUsername: String(parsed.proxyUsername ?? ""),
+    proxyPassword: String(parsed.proxyPassword ?? ""),
+    workanaProxyMode: (parsed.workanaProxyMode as ProxyMode) ?? "auto",
+    openaiApiKey: String(parsed.openaiApiKey ?? ""),
+  };
+
+  const legacyProxy = String(parsed.workanaProxy ?? "");
+  if (legacyProxy && !form.proxyHost) {
+    const match = legacyProxy.match(/^socks5:\/\/([^:]+):(\d+):([^:]+):(.+)$/);
+    if (match) {
+      form.proxyType = "socks5";
+      form.proxyHost = match[1];
+      form.proxyPort = match[2];
+      form.proxyUsername = match[3];
+      form.proxyPassword = match[4];
+    }
+  }
+
+  return form;
+}
 
 function loadLocalSettings(): FormState {
   if (typeof window === "undefined") return EMPTY_FORM;
   try {
     const raw = localStorage.getItem(CLIENT_SETTINGS_KEY);
     if (!raw) return EMPTY_FORM;
-    const parsed = JSON.parse(raw) as Partial<FormState>;
-    return {
-      workanaSession: parsed.workanaSession ?? "",
-      workanaProxy: parsed.workanaProxy ?? "",
-      workanaProxyMode: parsed.workanaProxyMode ?? "auto",
-      openaiApiKey: parsed.openaiApiKey ?? "",
-    };
+    return migrateLegacyForm(JSON.parse(raw) as Record<string, unknown>);
   } catch {
     return EMPTY_FORM;
   }
@@ -57,11 +96,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  const usingSession = Boolean(form.workanaSession.trim());
+
   const loadSettings = useCallback(async () => {
     setError(null);
     setSaved(false);
-    const local = loadLocalSettings();
-    setForm(local);
+    setForm(loadLocalSettings());
 
     try {
       const res = await fetch("/api/settings");
@@ -107,7 +147,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
     const payload: RuntimeSettingsInput = {
       workanaSession: form.workanaSession,
-      workanaProxy: form.workanaProxy,
+      workanaEmail: form.workanaEmail,
+      workanaPassword: form.workanaPassword,
+      proxyType: form.proxyType,
+      proxyHost: form.proxyHost,
+      proxyPort: form.proxyPort,
+      proxyUsername: form.proxyUsername,
+      proxyPassword: form.proxyPassword,
       workanaProxyMode: form.workanaProxyMode,
       openaiApiKey: form.openaiApiKey,
     };
@@ -156,7 +202,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               Connection settings
             </h2>
             <p className="settings-modal-subtitle">
-              Configure your Workana session, proxy, and OpenAI key for scraping and AI
+              Configure Workana authentication, proxy, and OpenAI for scraping and AI
               features.
             </p>
           </div>
@@ -172,72 +218,185 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
         {status && (
           <div className="settings-status-row">
-            <StatusChip label="Session" active={status.configured.session} />
+            <StatusChip label="Login" active={status.configured.login} />
             <StatusChip label="Proxy" active={status.configured.proxy} />
             <StatusChip label="OpenAI" active={status.configured.openai} />
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="settings-form">
-          <label className="settings-field">
-            <span className="settings-label">Workana session (PHPSESSID)</span>
-            <input
-              type="password"
-              className="settings-input"
-              value={form.workanaSession}
-              onChange={(e) => updateField("workanaSession", e.target.value)}
-              placeholder="Paste your PHPSESSID cookie value"
-              autoComplete="off"
-            />
-            <span className="settings-hint">
-              Required for full job listings behind Workana&apos;s guest wall.
-            </span>
-          </label>
+          <section className="settings-section">
+            <h3 className="settings-section-title">Workana account</h3>
 
-          <label className="settings-field">
-            <span className="settings-label">SOCKS5 proxy</span>
-            <input
-              type="text"
-              className="settings-input"
-              value={form.workanaProxy}
-              onChange={(e) => updateField("workanaProxy", e.target.value)}
-              placeholder="socks5://host:port:user:pass"
-              autoComplete="off"
-            />
-            <span className="settings-hint">
-              Used when direct connection fails. Leave empty if you use a VPN.
-            </span>
-          </label>
+            <label className="settings-field">
+              <span className="settings-label">Session (PHPSESSID)</span>
+              <input
+                type="password"
+                className="settings-input"
+                value={form.workanaSession}
+                onChange={(e) => updateField("workanaSession", e.target.value)}
+                placeholder="Paste your PHPSESSID cookie value"
+                autoComplete="off"
+              />
+              <span className="settings-hint">
+                Fastest option — paste the session cookie from your browser.
+              </span>
+            </label>
 
-          <label className="settings-field">
-            <span className="settings-label">Proxy mode</span>
-            <select
-              className="settings-input"
-              value={form.workanaProxyMode}
-              onChange={(e) =>
-                updateField("workanaProxyMode", e.target.value as ProxyMode)
-              }
-            >
-              <option value="auto">Auto — try direct, then proxy</option>
-              <option value="always">Always — force proxy</option>
-              <option value="never">Never — direct / VPN only</option>
-            </select>
-          </label>
+            <div className="settings-divider">
+              <span>or sign in with email</span>
+            </div>
 
-          <label className="settings-field">
-            <span className="settings-label">OpenAI API key</span>
-            <input
-              type="password"
-              className="settings-input"
-              value={form.openaiApiKey}
-              onChange={(e) => updateField("openaiApiKey", e.target.value)}
-              placeholder="sk-proj-..."
-              autoComplete="off"
-            />
+            <label className="settings-field">
+              <span className="settings-label">Login email</span>
+              <input
+                type="email"
+                className="settings-input"
+                value={form.workanaEmail}
+                onChange={(e) => updateField("workanaEmail", e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                disabled={usingSession}
+              />
+            </label>
+
+            <label className="settings-field">
+              <span className="settings-label">Login password</span>
+              <input
+                type="password"
+                className="settings-input"
+                value={form.workanaPassword}
+                onChange={(e) => updateField("workanaPassword", e.target.value)}
+                placeholder="Workana account password"
+                autoComplete="current-password"
+                disabled={usingSession}
+              />
+              <span className="settings-hint">
+                {usingSession
+                  ? "Clear the session field above to use email login instead."
+                  : "Used when no session is set — the scraper signs in automatically."}
+              </span>
+            </label>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">Proxy</h3>
+
+            <label className="settings-field">
+              <span className="settings-label">Proxy type</span>
+              <select
+                className="settings-input"
+                value={form.proxyType}
+                onChange={(e) => {
+                  const nextType = e.target.value as ProxyType;
+                  updateField("proxyType", nextType);
+                  if (!form.proxyPort.trim()) {
+                    updateField("proxyPort", defaultProxyPort(nextType));
+                  }
+                }}
+              >
+                {PROXY_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {type === "ssh"
+                      ? "SSH (SOCKS tunnel)"
+                      : type.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="settings-grid-2">
+              <label className="settings-field">
+                <span className="settings-label">Host</span>
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={form.proxyHost}
+                  onChange={(e) => updateField("proxyHost", e.target.value)}
+                  placeholder="proxy.example.com"
+                  autoComplete="off"
+                />
+              </label>
+
+              <label className="settings-field">
+                <span className="settings-label">Port</span>
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={form.proxyPort}
+                  onChange={(e) => updateField("proxyPort", e.target.value)}
+                  placeholder={defaultProxyPort(form.proxyType)}
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+
+            <div className="settings-grid-2">
+              <label className="settings-field">
+                <span className="settings-label">Proxy username</span>
+                <input
+                  type="text"
+                  className="settings-input"
+                  value={form.proxyUsername}
+                  onChange={(e) => updateField("proxyUsername", e.target.value)}
+                  placeholder="Optional"
+                  autoComplete="off"
+                />
+              </label>
+
+              <label className="settings-field">
+                <span className="settings-label">Proxy password</span>
+                <input
+                  type="password"
+                  className="settings-input"
+                  value={form.proxyPassword}
+                  onChange={(e) => updateField("proxyPassword", e.target.value)}
+                  placeholder="Optional"
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+
+            <label className="settings-field">
+              <span className="settings-label">Proxy mode</span>
+              <select
+                className="settings-input"
+                value={form.workanaProxyMode}
+                onChange={(e) =>
+                  updateField("workanaProxyMode", e.target.value as ProxyMode)
+                }
+              >
+                <option value="auto">Auto — try direct, then proxy</option>
+                <option value="always">Always — force proxy</option>
+                <option value="never">Never — direct / VPN only</option>
+              </select>
+            </label>
+
             <span className="settings-hint">
-              Powers AI Helper and market insights on the analytics dashboard.
+              {form.proxyType === "ssh"
+                ? "SSH uses a SOCKS tunnel on the host/port above (e.g. after ssh -D)."
+                : "Leave host empty if you connect directly or via VPN."}
             </span>
-          </label>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">OpenAI</h3>
+
+            <label className="settings-field">
+              <span className="settings-label">API key</span>
+              <input
+                type="password"
+                className="settings-input"
+                value={form.openaiApiKey}
+                onChange={(e) => updateField("openaiApiKey", e.target.value)}
+                placeholder="sk-proj-..."
+                autoComplete="off"
+              />
+              <span className="settings-hint">
+                Powers AI Helper and market insights on the analytics dashboard.
+              </span>
+            </label>
+          </section>
 
           {error && <p className="settings-error">{error}</p>}
           {saved && <p className="settings-success">Settings saved successfully.</p>}

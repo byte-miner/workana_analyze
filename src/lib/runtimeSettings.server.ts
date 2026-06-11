@@ -4,20 +4,38 @@ import { cookies } from "next/headers";
 import {
   mergeRuntimeSettings,
   normalizeProxyMode,
+  normalizeProxyType,
   SETTINGS_COOKIE,
   type RuntimeSettings,
 } from "./settingsTypes";
 
 export async function getRuntimeSettingsFromCookies(): Promise<Partial<RuntimeSettings>> {
   const store = await cookies();
-  const session = store.get(SETTINGS_COOKIE.session)?.value;
-  const proxy = store.get(SETTINGS_COOKIE.proxy)?.value;
-  const proxyMode = store.get(SETTINGS_COOKIE.proxyMode)?.value;
-  const openai = store.get(SETTINGS_COOKIE.openai)?.value;
+
+  const read = (key: keyof typeof SETTINGS_COOKIE) => store.get(SETTINGS_COOKIE[key])?.value;
+
+  const session = read("session");
+  const email = read("email");
+  const password = read("password");
+  const proxyType = read("proxyType");
+  const proxyHost = read("proxyHost");
+  const proxyPort = read("proxyPort");
+  const proxyUser = read("proxyUser");
+  const proxyPass = read("proxyPass");
+  const proxyLegacy = read("proxyLegacy");
+  const proxyMode = read("proxyMode");
+  const openai = read("openai");
 
   return {
     ...(session !== undefined ? { workanaSession: session } : {}),
-    ...(proxy !== undefined ? { workanaProxy: proxy } : {}),
+    ...(email !== undefined ? { workanaEmail: email } : {}),
+    ...(password !== undefined ? { workanaPassword: password } : {}),
+    ...(proxyType !== undefined ? { proxyType: normalizeProxyType(proxyType) } : {}),
+    ...(proxyHost !== undefined ? { proxyHost } : {}),
+    ...(proxyPort !== undefined ? { proxyPort } : {}),
+    ...(proxyUser !== undefined ? { proxyUsername: proxyUser } : {}),
+    ...(proxyPass !== undefined ? { proxyPassword: proxyPass } : {}),
+    ...(proxyLegacy !== undefined ? { workanaProxy: proxyLegacy } : {}),
     ...(proxyMode !== undefined
       ? { workanaProxyMode: normalizeProxyMode(proxyMode) }
       : {}),

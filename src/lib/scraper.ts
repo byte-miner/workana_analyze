@@ -23,11 +23,13 @@ import {
   routeLabel,
   selectNetworkRoute,
   getProxyMode,
-  buildProxyUrl,
   type NetworkRoute,
   type NetworkConfig,
 } from "./network";
+import { buildProxyUrl } from "./proxyConfig";
+import { loginToWorkana } from "./workanaAuth";
 import type { RuntimeSettings } from "./settingsTypes";
+import { hasWorkanaAuth } from "./settingsTypes";
 import { upsertJob, startScrapeLog, finishScrapeLog, repairInvalidPublishedDates } from "./db";
 
 let scrapeRunning = false;
@@ -52,8 +54,17 @@ export function getScrapeStatus() {
   return { status: scrapeStatus, message: scrapeMessage };
 }
 
-async function setupPage(browser: Browser, sessionId?: string): Promise<Page> {
-  const session = sessionId?.trim() || process.env.WORKANA_SESSION?.trim();
+async function setupPage(
+  browser: Browser,
+  auth?: Pick<RuntimeSettings, "workanaSession" | "workanaEmail" | "workanaPassword">,
+  onStatus?: (message: string) => void
+): Promise<Page> {
+  const session =
+    auth?.workanaSession?.trim() || process.env.WORKANA_SESSION?.trim() || "";
+  const email = auth?.workanaEmail?.trim() || process.env.WORKANA_EMAIL?.trim() || "";
+  const password =
+    auth?.workanaPassword?.trim() || process.env.WORKANA_PASSWORD?.trim() || "";
+
   const context = await browser.newContext({
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -83,6 +94,12 @@ async function setupPage(browser: Browser, sessionId?: string): Promise<Page> {
   }
 
   const page = await context.newPage();
+
+  if (!session && email && password) {
+    onStatus?.("Signing in to Workana...");
+    await loginToWorkana(page, email, password);
+  }
+
   return page;
 }
 
@@ -383,6 +400,11 @@ export async function runScraper(options?: {
       const settings = options?.settings;
       const networkConfig: NetworkConfig | undefined = settings
         ? {
+            proxyType: settings.proxyType,
+            proxyHost: settings.proxyHost,
+            proxyPort: settings.proxyPort,
+            proxyUsername: settings.proxyUsername,
+            proxyPassword: settings.proxyPassword,
             workanaProxy: settings.workanaProxy,
             workanaProxyMode: settings.workanaProxyMode,
           }
@@ -425,9 +447,11 @@ export async function runScraper(options?: {
           }
 
           activeRoute = route;
-          scrapeMessage = `Connecting via ${routeLabel(route)}...`;
+          scrapeMessage = `Connecting via ${routeLabel(route, networkConfig)}...`;
           session = await createBrowserSession(route, networkConfig);
-          const page = await setupPage(session.browser, settings?.workanaSession);
+          const page = await setupPage(session.browser, settings, (msg) => {
+            scrapeMessage = msg;
+          });
 
           result = await performScrapeLoop(
             page,
@@ -444,7 +468,7 @@ export async function runScraper(options?: {
 
           if (routesToTry.indexOf(route) < routesToTry.length - 1) {
             result.errors.push(
-              `${routeLabel(route)} returned no pages — retrying with ${routeLabel(alternateRoute(route))}`
+              `${routeLabel(route, networkConfig)} returned no pages — retrying with ${routeLabel(alternateRoute(route), networkConfig)}`
             );
           }
         }
@@ -453,11 +477,14 @@ export async function runScraper(options?: {
           result.errors.push("No projects found on any page");
         }
 
-        const workanaSession =
-          settings?.workanaSession?.trim() || process.env.WORKANA_SESSION?.trim() || "";
-        if (!workanaSession) {
+        const authSettings = settings ?? {
+          workanaSession: process.env.WORKANA_SESSION || "",
+          workanaEmail: process.env.WORKANA_EMAIL || "",
+          workanaPassword: process.env.WORKANA_PASSWORD || "",
+        };
+        if (!hasWorkanaAuth(authSettings)) {
           result.errors.push(
-            "WORKANA_SESSION is not set — listings may be incomplete behind Workana's guest wall"
+            "Workana auth is not set — add a session or email/password in Settings"
           );
         }
 
@@ -465,7 +492,7 @@ export async function runScraper(options?: {
         const repairedDates = result.pagesScraped > 0 ? repairInvalidPublishedDates() : 0;
         scrapeMessage =
           result.pagesScraped > 0
-            ? `Done via ${routeLabel(activeRoute!)}: ${result.newJobs} new, ${result.updatedJobs} updated${repairedDates ? `, ${repairedDates} dates fixed` : ""}`
+            ? `Done via ${routeLabel(activeRoute!, networkConfig)}: ${result.newJobs} new, ${result.updatedJobs} updated${repairedDates ? `, ${repairedDates} dates fixed` : ""}`
             : `Scrape failed — try toggling VPN. ${result.errors.slice(-1)[0] ?? ""}`;
 
         finishScrapeLog(logId, {
